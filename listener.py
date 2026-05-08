@@ -34,14 +34,23 @@ def find_device(name):
         if name.lower() in dev["name"].lower() and dev["max_input_channels"] > 0:
             log.info(f"Found audio device [{i}]: {dev['name']}")
             return i
-    log.warning(f"Device '{name}' not found, falling back to default input.")
     return None
 
 
 class AudioListener:
     def __init__(self, capture_seconds=8):
         self.capture_seconds = capture_seconds
-        self.device = find_device(DEVICE_NAME) if DEVICE_NAME else None
+        if DEVICE_NAME:
+            self.device = find_device(DEVICE_NAME)
+            if self.device is None:
+                log.error(
+                    f"Audio device '{DEVICE_NAME}' not found. "
+                    f"Is the Rega plugged in? "
+                    f"Run 'arecord -l' to see available devices."
+                )
+                raise SystemExit(1)
+        else:
+            self.device = None
 
     def capture(self):
         """

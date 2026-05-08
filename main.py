@@ -19,20 +19,51 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# How often to poll (seconds)
-POLL_INTERVAL = 30
+# How often to poll RMS when no record is playing (seconds) — fast so needle drop feels instant
+SLEEP_POLL_INTERVAL = 3
 
-# How many seconds of audio to capture per attempt
+# How often to poll RMS when watching for side end (seconds)
+SIDE_END_POLL_INTERVAL = 30
+
+# How many seconds of audio to capture per identification attempt
 CAPTURE_SECONDS = 8
+
+# How long to wait after signal detected before capturing — lets music settle past intro/crackle
+SETTLE_SECONDS = 5
+
+# How many identification attempts before giving up on a side
+MAX_ID_ATTEMPTS = 3
+
+# How long to wait between identification retries (seconds)
+RETRY_INTERVAL = 12
 
 # RMS threshold for "no record playing" (digital source = near zero noise floor)
 SILENCE_THRESHOLD = 200
 
 # RMS threshold for "side has ended" — higher to account for crackle and run-out groove
-SIDE_END_THRESHOLD = 800
+SIDE_END_THRESHOLD = 600
 
 # How many consecutive low-RMS readings before we declare the side finished
-SIDE_END_CONSECUTIVE = 3
+SIDE_END_CONSECUTIVE = 4
+
+
+def identify_with_retries(listener, identifier, max_attempts, retry_interval):
+    """
+    Attempt identification up to max_attempts times.
+    Waits retry_interval seconds between attempts.
+    Returns a track dict on success, or None if all attempts fail.
+    """
+    for attempt in range(1, max_attempts + 1):
+        log.info(f"Identification attempt {attempt}/{max_attempts}...")
+        audio_data = listener.capture()
+        track = identifier.identify(audio_data)
+        if track:
+            return track
+        if attempt < max_attempts:
+            log.info(f"No match — retrying in {retry_interval}s...")
+            time.sleep(retry_interval)
+    log.info("All identification attempts failed — will retry next wake cycle.")
+    return None
 
 
 def main():
@@ -58,15 +89,15 @@ def main():
 
     while True:
         try:
-            log.info("Capturing audio...")
-            audio_data = listener.capture()
-            rms = listener.get_rms(audio_data)
-            log.info(f"RMS level: {rms:.1f}")
-
             # ---------------------------------------------------------- #
             # MODE 1: Watching for side end after a successful ID         #
             # ---------------------------------------------------------- #
             if watching_for_side_end:
+                time.sleep(SIDE_END_POLL_INTERVAL)
+                audio_data = listener.capture()
+                rms = listener.get_rms(audio_data)
+                log.info(f"RMS level: {rms:.1f}")
+
                 if rms < SIDE_END_THRESHOLD:
                     side_end_counter += 1
                     log.info(f"Low signal — side end counter: {side_end_counter}/{SIDE_END_CONSECUTIVE}")
@@ -80,27 +111,33 @@ def main():
                     if side_end_counter > 0:
                         log.info("Signal recovered — resetting side end counter.")
                     side_end_counter = 0
-
-                time.sleep(POLL_INTERVAL)
                 continue
 
             # ---------------------------------------------------------- #
-            # MODE 2: Listening for a new record                          #
+            # MODE 2: Sleep phase — fast RMS polling, no API calls        #
             # ---------------------------------------------------------- #
+            audio_data = listener.capture()
+            rms = listener.get_rms(audio_data)
+
             if rms < SILENCE_THRESHOLD:
-                log.info("Silence detected — no record playing.")
-                if current_track is not None:
-                    current_track = None
-                    display.show_idle()
-                time.sleep(POLL_INTERVAL)
+                log.debug(f"Silence — RMS: {rms:.1f}")
+                time.sleep(SLEEP_POLL_INTERVAL)
                 continue
 
-            log.info("Identifying track...")
-            track = identifier.identify(audio_data)
+            # Signal detected
+
+
+            # ---------------------------------------------------------- #
+            # MODE 3: Signal detected — settle then identify              #
+            # ---------------------------------------------------------- #
+            log.info(f"Signal detected — RMS: {rms:.1f}. Settling for {SETTLE_SECONDS}s...")
+            time.sleep(SETTLE_SECONDS)
+
+            track = identify_with_retries(listener, identifier, MAX_ID_ATTEMPTS, RETRY_INTERVAL)
 
             if track is None:
-                log.info("No track identified — will retry next poll.")
-                display.show_idle()
+                log.info("Could not identify track — returning to sleep.")
+                time.sleep(SLEEP_POLL_INTERVAL)
 
             elif track != current_track:
                 log.info(f"New track: {track['artist']} - {track['title']} ({track['album']})")
@@ -115,12 +152,12 @@ def main():
 
             else:
                 log.info(f"Same track still playing: {track['title']}")
+                watching_for_side_end = True
 
         except Exception as e:
             log.error(f"Error in main loop: {e}", exc_info=True)
             display.show_error()
-
-        time.sleep(POLL_INTERVAL)
+            time.sleep(SLEEP_POLL_INTERVAL)
 
 
 if __name__ == "__main__":
