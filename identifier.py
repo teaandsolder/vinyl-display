@@ -1,73 +1,73 @@
 #!/usr/bin/env python3
 """
-Track identification using the AudD API.
-Send a WAV clip, get back artist/title/album metadata.
-Sign up for a free API key at: https://dashboard.audd.io/
+Track identification using ShazamIO.
+Saves a WAV clip to a temp file and submits to Shazam for identification.
+No API key required — unlimited requests.
 """
 
+import asyncio
 import logging
-import requests
-import config
+import tempfile
+import os
 
 log = logging.getLogger(__name__)
-
-AUDD_ENDPOINT = "https://api.audd.io/"
 
 
 class TrackIdentifier:
     def __init__(self):
-        if not config.AUDD_API_KEY:
-            raise ValueError("AUDD_API_KEY is not set in config.py")
+        from shazamio import Shazam
+        self.shazam = Shazam()
 
     def identify(self, wav_bytes: bytes) -> dict | None:
         """
-        Submit audio to AudD and return a track dict or None.
-        Returns: {"artist": ..., "title": ..., "album": ...} or None
+        Submit audio to Shazam and return a track dict or None.
+        Returns: {"artist": ..., "title": ..., "album": ..., "artwork_url": ...} or None
         """
-        try:
-            response = requests.post(
-                AUDD_ENDPOINT,
-                data={
-                    "api_token": config.AUDD_API_KEY,
-                    "return": "apple_music,spotify",
-                },
-                files={"file": ("clip.wav", wav_bytes, "audio/wav")},
-                timeout=15
-            )
-            response.raise_for_status()
-            data = response.json()
+        return asyncio.run(self._identify_async(wav_bytes))
 
-            if data.get("status") != "success" or not data.get("result"):
-                log.info(f"AudD response: {data.get('status')} - no match")
+    async def _identify_async(self, wav_bytes: bytes) -> dict | None:
+        # Write WAV bytes to a temp file for ShazamIO to read
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp.write(wav_bytes)
+            tmp_path = tmp.name
+
+        try:
+            result = await self.shazam.recognize(tmp_path)
+
+            track = result.get("track")
+            if not track:
+                log.info("Shazam returned no match.")
                 return None
 
-            result = data["result"]
-            track = {
-                "artist": result.get("artist", "Unknown Artist"),
-                "title": result.get("title", "Unknown Title"),
-                "album": result.get("album", ""),
+            # Extract metadata
+            artist = track.get("subtitle", "Unknown Artist")
+            title = track.get("title", "Unknown Title")
+
+            # Album is buried in sections metadata
+            album = ""
+            for section in track.get("sections", []):
+                for meta in section.get("metadata", []):
+                    if meta.get("title", "").lower() == "album":
+                        album = meta.get("text", "")
+                        break
+
+            # High res artwork
+            artwork_url = track.get("images", {}).get("coverarthq", "")
+            if not artwork_url:
+                artwork_url = track.get("images", {}).get("coverart", "")
+
+            log.info(f"Identified: {artist} - {title}")
+
+            return {
+                "artist": artist,
+                "title": title,
+                "album": album,
+                "artwork_url": artwork_url,
             }
 
-            # Try to extract a high-res artwork URL from Spotify metadata if present
-            spotify = result.get("spotify")
-            if spotify:
-                images = spotify.get("album", {}).get("images", [])
-                if images:
-                    # Spotify returns images sorted largest first
-                    track["artwork_url"] = images[0]["url"]
-
-            # Fall back to Apple Music artwork if available
-            if "artwork_url" not in track:
-                apple = result.get("apple_music")
-                if apple:
-                    raw_url = apple.get("artwork", {}).get("url", "")
-                    if raw_url:
-                        # Replace Apple's template dimensions with a large size
-                        track["artwork_url"] = raw_url.replace("{w}x{h}", "512x512")
-
-            log.info(f"Identified: {track['artist']} - {track['title']}")
-            return track
-
-        except requests.RequestException as e:
-            log.error(f"AudD request failed: {e}")
+        except Exception as e:
+            log.error(f"ShazamIO error: {e}")
             return None
+
+        finally:
+            os.unlink(tmp_path)

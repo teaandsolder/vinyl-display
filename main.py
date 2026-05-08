@@ -23,19 +23,19 @@ log = logging.getLogger(__name__)
 SLEEP_POLL_INTERVAL = 3
 
 # How often to poll RMS when watching for side end (seconds)
-SIDE_END_POLL_INTERVAL = 30
+SIDE_END_POLL_INTERVAL = 15
 
 # How many seconds of audio to capture per identification attempt
-CAPTURE_SECONDS = 8
+CAPTURE_SECONDS = 10
 
 # How long to wait after signal detected before capturing — lets music settle past intro/crackle
-SETTLE_SECONDS = 5
+SETTLE_SECONDS = 3
 
 # How many identification attempts before giving up on a side
 MAX_ID_ATTEMPTS = 3
 
 # How long to wait between identification retries (seconds)
-RETRY_INTERVAL = 12
+RETRY_INTERVAL = 8
 
 # RMS threshold for "no record playing" (digital source = near zero noise floor)
 SILENCE_THRESHOLD = 200
@@ -162,3 +162,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

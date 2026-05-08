@@ -38,7 +38,7 @@ def find_device(name):
 
 
 class AudioListener:
-    def __init__(self, capture_seconds=8):
+    def __init__(self, capture_seconds=10):
         self.capture_seconds = capture_seconds
         if DEVICE_NAME:
             self.device = find_device(DEVICE_NAME)
