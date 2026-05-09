@@ -17,7 +17,7 @@ MATRIX_OPTIONS = {
     "chain_length": 1,
     "parallel": 1,
     "hardware_mapping": "adafruit-hat",
-    "brightness": 50,  # lower brightness looks better for album art
+    "brightness": 50,
     "gpio_slowdown": 4,  # Pi 3B sweet spot
     "drop_privileges": False,
 }

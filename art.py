@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Fetch album art and resize to 64x64 for the LED matrix.
-Uses the artwork URL supplied by AudD (Spotify/Apple Music),
+Uses the artwork URL supplied by ShazamIO (Apple Music),
 with a MusicBrainz Cover Art Archive fallback.
 """
 
@@ -31,17 +31,13 @@ class AlbumArtFetcher:
         return None
 
     def fetch(self, track: dict) -> Image.Image | None:
-        """
-        Return a 64x64 PIL Image for the given track, or None on failure.
-        """
-        # 1. Try the direct URL supplied by the identifier
+        """Return a 64x64 PIL Image for the given track, or None on failure."""
         url = track.get("artwork_url")
         if url:
             image = self._download_image(url)
             if image:
                 return self._resize(image)
 
-        # 2. Fall back to Cover Art Archive via MusicBrainz lookup
         log.info("Falling back to Cover Art Archive...")
         mbid = self._lookup_mbid(track)
         if mbid:
@@ -83,7 +79,7 @@ class AlbumArtFetcher:
         return None
 
     def _resize(self, image: Image.Image) -> Image.Image:
-        """Resize to 64x64 and adjust saturation."""
+        """Resize to 64x64 using high quality Lanczos resampling."""
         from PIL import ImageEnhance
         image = image.resize(MATRIX_SIZE, Image.LANCZOS)
         image = ImageEnhance.Color(image).enhance(0.8)  # 80% saturation

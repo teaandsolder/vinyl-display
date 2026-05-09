@@ -41,11 +41,11 @@ RETRY_INTERVAL = 8
 # RMS threshold for "no record playing" (digital source = near zero noise floor)
 SILENCE_THRESHOLD = 200
 
-# RMS threshold for "side has ended" — higher to account for crackle and run-out groove
-SIDE_END_THRESHOLD = 600
+# RMS threshold for "side has ended" — set between run-out groove (70-130) and quietest music (221+)
+SIDE_END_THRESHOLD = 180
 
 # How many consecutive low-RMS readings before we declare the side finished
-SIDE_END_CONSECUTIVE = 4
+SIDE_END_CONSECUTIVE = 6
 
 
 def identify_with_retries(listener, identifier, max_attempts, retry_interval):
@@ -121,6 +121,11 @@ def main():
                     # Re-identify every poll — unlimited ShazamIO, keep artwork fresh
                     track = identify_with_retries(listener, identifier, 1, 0)
                     if track:
+                        # If artist changed — new record, reset resolver
+                        if current_track and track["artist"] != current_track["artist"]:
+                            log.info(f"New artist detected ({track['artist']}) — resetting resolver")
+                            resolver.reset()
+
                         # Feed track to resolver — gets smarter with each new track
                         best_album = resolver.add_track(track["artist"], track["title"])
 
