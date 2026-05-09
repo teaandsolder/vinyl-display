@@ -16,9 +16,9 @@ MATRIX_OPTIONS = {
     "cols": 64,
     "chain_length": 1,
     "parallel": 1,
-    "hardware_mapping": "adafruit-hat",  # use "regular" if not using Adafruit bonnet
-    "brightness": 80,                    # 0-100
-    "gpio_slowdown": 4,                  # increase if you see flickering (Pi 4: try 4)
+    "hardware_mapping": "adafruit-hat",
+    "brightness": 50,  # lower brightness looks better for album art
+    "gpio_slowdown": 4,  # Pi 3B sweet spot
     "drop_privileges": False,
 }
 
@@ -103,9 +103,9 @@ class MatrixDisplay:
     # ------------------------------------------------------------------ #
 
     def _push(self, image: Image.Image):
-        """Send a PIL image to the matrix immediately."""
+        """Send a PIL image to the matrix."""
         if self.matrix and self.canvas:
-            self.canvas.SetImage(image)
+            self.canvas.SetImage(image.convert("RGB"))
             self.canvas = self.matrix.SwapOnVSync(self.canvas)
         else:
             log.debug("Preview mode: image would be displayed here")
