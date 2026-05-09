@@ -16,9 +16,9 @@ MATRIX_OPTIONS = {
     "cols": 64,
     "chain_length": 1,
     "parallel": 1,
-    "hardware_mapping": "adafruit-hat",
+    "hardware_mapping": "adafruit-hat-pwm",
     "brightness": 50,
-    "gpio_slowdown": 4,  # Pi 3B sweet spot
+    "gpio_slowdown": 2,  # Pi 3B sweet spot
     "drop_privileges": False,
 }
 
