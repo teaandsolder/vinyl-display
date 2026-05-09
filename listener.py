@@ -70,6 +70,19 @@ class AudioListener:
 
         return self._to_wav_bytes(audio)
 
+    def quick_rms(self) -> float:
+        """Record 1 second and return RMS — lightweight check for sleep phase."""
+        frames = int(SAMPLE_RATE * 1)
+        audio = sd.rec(
+            frames,
+            samplerate=SAMPLE_RATE,
+            channels=CHANNELS,
+            dtype="int16",
+            device=self.device,
+            blocking=True
+        )
+        return float(np.sqrt(np.mean(audio.astype(np.float32) ** 2)))
+
     def get_rms(self, wav_bytes: bytes) -> float:
         """Return the RMS amplitude of the audio clip."""
         audio = np.frombuffer(wav_bytes, dtype=np.int16)

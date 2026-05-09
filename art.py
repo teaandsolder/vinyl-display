@@ -19,6 +19,17 @@ CAA_IMAGE  = "https://coverartarchive.org/release/{mbid}/front-500"
 
 class AlbumArtFetcher:
 
+    def fetch_by_mbid(self, mbid: str, fallback_track: dict = None) -> Image.Image | None:
+        """Fetch artwork from Cover Art Archive, falling back to track artwork if 404."""
+        url = CAA_IMAGE.format(mbid=mbid)
+        image = self._download_image(url)
+        if image:
+            return self._resize(image)
+        log.warning(f"Cover Art Archive returned no image for {mbid} — falling back to track artwork")
+        if fallback_track:
+            return self.fetch(fallback_track)
+        return None
+
     def fetch(self, track: dict) -> Image.Image | None:
         """
         Return a 64x64 PIL Image for the given track, or None on failure.
@@ -72,5 +83,8 @@ class AlbumArtFetcher:
         return None
 
     def _resize(self, image: Image.Image) -> Image.Image:
-        """Resize to 64x64 using high-quality Lanczos resampling."""
-        return image.resize(MATRIX_SIZE, Image.LANCZOS)
+        """Resize to 64x64 and adjust saturation."""
+        from PIL import ImageEnhance
+        image = image.resize(MATRIX_SIZE, Image.LANCZOS)
+        image = ImageEnhance.Color(image).enhance(0.8)  # 80% saturation
+        return image

@@ -12,6 +12,7 @@ from display import MatrixDisplay
 from listener import AudioListener
 from identifier import TrackIdentifier
 from art import AlbumArtFetcher
+from album_resolver import AlbumResolver
 
 logging.basicConfig(
     level=logging.INFO,
@@ -71,8 +72,10 @@ def main():
     listener = AudioListener(capture_seconds=CAPTURE_SECONDS)
     identifier = TrackIdentifier()
     art_fetcher = AlbumArtFetcher()
+    resolver = AlbumResolver()
 
     current_track = None
+    current_artwork = None
     side_end_counter = 0
     watching_for_side_end = False
 
@@ -94,8 +97,9 @@ def main():
             # ---------------------------------------------------------- #
             if watching_for_side_end:
                 time.sleep(SIDE_END_POLL_INTERVAL)
-                audio_data = listener.capture()
-                rms = listener.get_rms(audio_data)
+
+                # Quick RMS check first
+                rms = listener.quick_rms()
                 log.info(f"RMS level: {rms:.1f}")
 
                 if rms < SIDE_END_THRESHOLD:
@@ -104,20 +108,52 @@ def main():
                     if side_end_counter >= SIDE_END_CONSECUTIVE:
                         log.info("Side ended — resetting, ready for next record.")
                         current_track = None
+                        current_artwork = None
                         watching_for_side_end = False
                         side_end_counter = 0
+                        resolver.reset()
                         display.show_idle()
                 else:
                     if side_end_counter > 0:
-                        log.info("Signal recovered — resetting side end counter.")
-                    side_end_counter = 0
+                        log.info("Signal recovered — re-identifying...")
+                        side_end_counter = 0
+
+                    # Re-identify every poll — unlimited ShazamIO, keep artwork fresh
+                    track = identify_with_retries(listener, identifier, 1, 0)
+                    if track:
+                        # Feed track to resolver — gets smarter with each new track
+                        best_album = resolver.add_track(track["artist"], track["title"])
+
+                        if track != current_track:
+                            log.info(f"Track updated: {track['artist']} - {track['title']}")
+                            current_track = track
+                            # Try resolver's album first, fall back to track's own artwork
+                            if best_album and best_album.get("mbid"):
+                                log.info(f"Resolver confident: {best_album['title']} ({best_album['confidence']:.0%})")
+                                image = art_fetcher.fetch_by_mbid(best_album["mbid"], fallback_track=track)
+                            else:
+                                image = art_fetcher.fetch(track)
+                            if image:
+                                current_artwork = image
+                                display.show_album_art(image)
+                            else:
+                                display.show_track_text(track)
+                        elif best_album and best_album.get("mbid") and best_album["confidence"] > 0.6:
+                            # Same track but resolver now more confident — update artwork
+                            log.info(f"Resolver updated artwork: {best_album['title']}")
+                            image = art_fetcher.fetch_by_mbid(best_album["mbid"], fallback_track=current_track)
+                            if image and image != current_artwork:
+                                current_artwork = image
+                                display.show_album_art(image)
+                        else:
+                            log.info(f"Same track: {current_track['title'] if current_track else 'unknown'}")
+
                 continue
 
             # ---------------------------------------------------------- #
             # MODE 2: Sleep phase — fast RMS polling, no API calls        #
             # ---------------------------------------------------------- #
-            audio_data = listener.capture()
-            rms = listener.get_rms(audio_data)
+            rms = listener.quick_rms()
 
             if rms < SILENCE_THRESHOLD:
                 log.debug(f"Silence — RMS: {rms:.1f}")
@@ -162,4 +198,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
