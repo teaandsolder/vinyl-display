@@ -1,75 +1,81 @@
 #!/usr/bin/env python3
 """
-Fetch album art and resize to 64x64 for the LED matrix.
-Uses the artwork URL supplied by ShazamIO (Apple Music),
-with a MusicBrainz Cover Art Archive fallback.
+Fetch album art for the LED matrix and web UI.
+Returns full resolution for saving/display in web UI,
+and 64x64 processed version for the matrix.
 """
 
 import logging
 import requests
-from PIL import Image
+from PIL import Image, ImageEnhance
 import io
+from config import SATURATION
 
 log = logging.getLogger(__name__)
 
-MATRIX_SIZE = (64, 64)
-CAA_SEARCH = "https://musicbrainz.org/ws/2/release"
-CAA_IMAGE  = "https://coverartarchive.org/release/{mbid}/front-500"
+MATRIX_SIZE  = (64, 64)
+PREVIEW_SIZE = (800, 800)   # saved to covers folder for web UI — high DPI
+CAA_IMAGE    = "https://coverartarchive.org/release/{mbid}/front-500"
+MB_SEARCH    = "https://musicbrainz.org/ws/2/release"
+MB_HEADERS   = {"User-Agent": "VinylDisplay/1.0 (teaandsolder)"}
 
 
 class AlbumArtFetcher:
 
-    def fetch_by_mbid(self, mbid: str, fallback_track: dict = None) -> Image.Image | None:
-        """Fetch artwork from Cover Art Archive, falling back to track artwork if 404."""
-        url = CAA_IMAGE.format(mbid=mbid)
-        image = self._download_image(url)
-        if image:
-            return self._resize(image)
-        log.warning(f"Cover Art Archive returned no image for {mbid} — falling back to track artwork")
-        if fallback_track:
-            return self.fetch(fallback_track)
-        return None
+    def fetch(self, track: dict, shared_state=None):
+        """
+        Fetch best available artwork.
+        Returns (matrix_image, full_image) tuple or (None, None).
+        """
+        candidates = []
+        shazam_url = track.get("artwork_url")
+        if shazam_url:
+            candidates.append({"url": shazam_url, "source": "shazam", "label": "Shazam"})
 
-    def fetch(self, track: dict) -> Image.Image | None:
-        """Return a 64x64 PIL Image for the given track, or None on failure."""
-        url = track.get("artwork_url")
-        if url:
-            image = self._download_image(url)
-            if image:
-                return self._resize(image)
-
-        log.info("Falling back to Cover Art Archive...")
         mbid = self._lookup_mbid(track)
         if mbid:
             caa_url = CAA_IMAGE.format(mbid=mbid)
-            image = self._download_image(caa_url)
-            if image:
-                return self._resize(image)
+            candidates.append({"url": caa_url, "source": "caa", "label": "Cover Art Archive"})
 
-        log.warning(f"No album art found for: {track.get('artist')} - {track.get('album')}")
-        return None
+        if shared_state:
+            for c in candidates:
+                shared_state.add_artwork_candidate(c["url"], c["source"], c["label"])
 
-    def _download_image(self, url: str) -> Image.Image | None:
+        for candidate in candidates:
+            full_image = self._download(candidate["url"])
+            if full_image:
+                if shared_state:
+                    shared_state.update(current_artwork_url=candidate["url"])
+                return self._for_matrix(full_image), self._for_preview(full_image)
+
+        log.warning(f"No artwork found for: {track.get('artist')} - {track.get('album')}")
+        return None, None
+
+    def fetch_url(self, url: str):
+        """Fetch from specific URL. Returns (matrix_image, full_image) or (None, None)."""
+        full_image = self._download(url)
+        if full_image:
+            return self._for_matrix(full_image), self._for_preview(full_image)
+        return None, None
+
+    def _download(self, url: str) -> Image.Image | None:
         try:
             resp = requests.get(url, timeout=10)
             resp.raise_for_status()
-            image = Image.open(io.BytesIO(resp.content)).convert("RGB")
             log.info(f"Artwork downloaded from {url}")
-            return image
+            return Image.open(io.BytesIO(resp.content)).convert("RGB")
         except Exception as e:
-            log.warning(f"Image download failed ({url}): {e}")
+            log.warning(f"Download failed ({url}): {e}")
             return None
 
     def _lookup_mbid(self, track: dict) -> str | None:
-        """Query MusicBrainz for a release MBID to use with Cover Art Archive."""
         try:
             params = {
-                "query": f'artist:"{track.get("artist", "")}" release:"{track.get("album", track.get("title", ""))}"',
+                "query": f'artist:"{track.get("artist","")}" release:"{track.get("album", track.get("title",""))}"',
                 "fmt": "json",
                 "limit": 1,
             }
-            resp = requests.get(CAA_SEARCH, params=params, timeout=10,
-                                headers={"User-Agent": "VinylDisplay/1.0"})
+            resp = requests.get(MB_SEARCH, params=params, headers=MB_HEADERS, timeout=10)
             resp.raise_for_status()
             releases = resp.json().get("releases", [])
             if releases:
@@ -78,9 +84,13 @@ class AlbumArtFetcher:
             log.warning(f"MusicBrainz lookup failed: {e}")
         return None
 
-    def _resize(self, image: Image.Image) -> Image.Image:
-        """Resize to 64x64 using high quality Lanczos resampling."""
-        from PIL import ImageEnhance
-        image = image.resize(MATRIX_SIZE, Image.LANCZOS)
-        image = ImageEnhance.Color(image).enhance(0.8)  # 80% saturation
-        return image
+    def _for_matrix(self, image: Image.Image) -> Image.Image:
+        """Resize to 64x64 with saturation adjustment for LED matrix."""
+        from state import state
+        saturation = state.get().saturation
+        img = image.resize(MATRIX_SIZE, Image.LANCZOS)
+        return ImageEnhance.Color(img).enhance(saturation)
+
+    def _for_preview(self, image: Image.Image) -> Image.Image:
+        """Resize to preview size for web UI — high quality, no saturation adjustment."""
+        return image.resize(PREVIEW_SIZE, Image.LANCZOS)

@@ -14,9 +14,8 @@ log = logging.getLogger(__name__)
 MUSICBRAINZ_URL = "https://musicbrainz.org/ws/2/recording"
 HEADERS = {"User-Agent": "VinylDisplay/1.0 (teaandsolder)"}
 
-# Release type base scores — studio albums preferred over compilations and live
 RELEASE_TYPE_SCORES = {
-    "Album":       3,  # studio album
+    "Album":       3,
     "Compilation": 2,
     "Live":        1,
     "Single":      1,
@@ -33,7 +32,7 @@ class AlbumResolver:
         self.tracks = []
         self.release_votes = Counter()
         self.release_info = {}
-        self._position_cache = {}  # track title → {release_id: track_number}
+        self._position_cache = {}
 
     def add_track(self, artist: str, title: str) -> dict | None:
         if (artist, title) in self.tracks:
@@ -45,7 +44,7 @@ class AlbumResolver:
 
         releases = self._query_releases(artist, title)
 
-        # Cache track numbers by normalised release title for sequence matching
+        # Cache track numbers by normalised title for sequence matching
         self._position_cache[title] = {}
         for r in releases:
             t = r["title"].lower().strip()
@@ -77,7 +76,6 @@ class AlbumResolver:
                     if curr_num == prev_num + 1:
                         sequence_bonus = 2
                         log.info(f"Album resolver: consecutive match on '{r['title']}' (tracks {prev_num}→{curr_num})")
-                        log.info(f"Album resolver: consecutive match on '{rtitle}' (tracks {prev_num}→{curr_num})")
 
             self.release_votes[rid] += type_score + sequence_bonus
             self.release_info[rid] = r
@@ -110,19 +108,17 @@ class AlbumResolver:
                 "limit": 10,
             }
             resp = requests.get(MUSICBRAINZ_URL, params=params,
-                                headers=HEADERS, timeout=10)
+                                headers=HEADERS, timeout=15)
             resp.raise_for_status()
             recordings = resp.json().get("recordings", [])
 
             releases = []
             for recording in recordings:
                 for release in recording.get("releases", []):
-                    # Get release type
                     rg = release.get("release-group", {})
                     primary_type = rg.get("primary-type", "")
                     secondary_types = rg.get("secondary-types", [])
 
-                    # Score: secondary types (Compilation, Live) override primary
                     if "Live" in secondary_types:
                         type_score = RELEASE_TYPE_SCORES["Live"]
                         release_type = "Live"
@@ -133,7 +129,6 @@ class AlbumResolver:
                         release_type = primary_type
                         type_score = RELEASE_TYPE_SCORES.get(primary_type, DEFAULT_TYPE_SCORE)
 
-                    # Get track number from media
                     track_number = None
                     for medium in release.get("media", []):
                         for track in medium.get("track", []):

@@ -10,16 +10,15 @@ import wave
 import logging
 import sounddevice as sd
 import numpy as np
+from config import DEVICE_NAME
 
 log = logging.getLogger(__name__)
 
-DEVICE_NAME = "CODEC"   # partial match; set None to use system default
-SAMPLE_RATE = 16000     # ShazamIO downmixes to 16kHz internally anyway
-CHANNELS    = 1         # mono — halves DMA bandwidth vs stereo
+SAMPLE_RATE = 16000   # ShazamIO downmixes to 16kHz internally
+CHANNELS    = 1       # mono — halves DMA bandwidth vs stereo
 
 
 def find_device(name):
-    """Find a sounddevice input device by partial name match."""
     for i, dev in enumerate(sd.query_devices()):
         if name.lower() in dev["name"].lower() and dev["max_input_channels"] > 0:
             log.info(f"Found audio device [{i}]: {dev['name']}")
@@ -42,7 +41,6 @@ class AudioListener:
             self.device = None
 
     def capture(self) -> bytes:
-        """Record audio and return WAV bytes for identification."""
         frames = int(SAMPLE_RATE * self.capture_seconds)
         log.info(f"Recording {self.capture_seconds}s from device: {self.device or 'default'}")
         audio = sd.rec(frames, samplerate=SAMPLE_RATE, channels=CHANNELS,
@@ -50,7 +48,6 @@ class AudioListener:
         return self._to_wav_bytes(audio)
 
     def quick_rms(self) -> float:
-        """Record 1 second and return RMS — lightweight signal check."""
         audio = sd.rec(SAMPLE_RATE, samplerate=SAMPLE_RATE, channels=CHANNELS,
                        dtype="int16", device=self.device, blocking=True)
         return float(np.sqrt(np.mean(audio.astype(np.float32) ** 2)))
