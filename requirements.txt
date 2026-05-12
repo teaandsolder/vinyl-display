@@ -1,0 +1,8 @@
+sounddevice
+numpy
+requests
+Pillow
+flask
+# ShazamIO and rpi-rgb-led-matrix require special installation — see README
+# pip install shazamio
+# rpi-rgb-led-matrix must be built from source (see README)
