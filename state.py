@@ -20,6 +20,8 @@ class VinylState:
     artwork_candidates: list = field(default_factory=list)
     brightness: int = 50
     saturation: float = 0.8
+    gamma: float = 1.0
+    next_identify_in: int = 30
 
 
 class SharedState:

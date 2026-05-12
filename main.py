@@ -13,17 +13,19 @@ import sys
 import json
 import os
 import hashlib
+from PIL import Image as PILImage
 from display import MatrixDisplay
 from listener import AudioListener
 from identifier import TrackIdentifier
 from art import AlbumArtFetcher
 from server import start_server
 from state import state
+import stats as vstats
 from config import (
     CAPTURE_SECONDS, SETTLE_SECONDS,
-    SIGNAL_THRESHOLD, SIDE_END_CONSECUTIVE,
+    SIGNAL_THRESHOLD,
     SLEEP_POLL_INTERVAL, PLAYING_POLL_INTERVAL,
-    BRIGHTNESS, SATURATION
+    BRIGHTNESS, SATURATION, GAMMA
 )
 
 logging.basicConfig(
@@ -70,7 +72,7 @@ def _get_pref(artist: str, title: str) -> str | None:
 
 
 def _save_cover(image, source_url: str) -> str | None:
-    """Save a PIL image to the covers folder. Returns the local file path or None."""
+    """Save a PIL image to the covers folder. Returns local path or None."""
     if image is None:
         return None
     _ensure_dirs()
@@ -80,6 +82,26 @@ def _save_cover(image, source_url: str) -> str | None:
         image.save(path, "JPEG", quality=95)
         log.info(f"Saved cover: {path}")
     return path
+
+
+def _apply_selection(selected_url, art_fetcher):
+    """
+    Load and process a selected artwork URL (local /covers/ or remote).
+    Returns (matrix_img, full_img, local_path, resolved_url).
+    """
+    if selected_url.startswith("/covers/"):
+        filename = selected_url.replace("/covers/", "")
+        local_path = os.path.join(COVERS_DIR, filename)
+        if os.path.exists(local_path):
+            full_img = PILImage.open(local_path).convert("RGB")
+            matrix_img = art_fetcher._for_matrix(full_img)
+            return matrix_img, full_img, local_path, selected_url
+        return None, None, None, selected_url
+    else:
+        matrix_img, full_img = art_fetcher.fetch_url(selected_url)
+        local_path = _save_cover(full_img, selected_url) if full_img else None
+        resolved_url = f"/covers/{os.path.basename(local_path)}" if local_path else selected_url
+        return matrix_img, full_img, local_path, resolved_url
 
 
 def identify(listener, identifier):
@@ -93,14 +115,17 @@ def main():
     identifier  = TrackIdentifier()
     art_fetcher = AlbumArtFetcher()
 
-    state.update(brightness=BRIGHTNESS, saturation=SATURATION)
+    state.update(brightness=BRIGHTNESS, saturation=SATURATION, gamma=GAMMA)
     start_server()
 
-    current_track   = None
-    current_artwork = None
-    low_count       = 0
-    playing         = False
-    last_saturation = SATURATION
+    current_track        = None
+    current_artwork      = None
+    current_artwork_full = None
+    playing              = False
+    last_saturation      = SATURATION
+    last_gamma           = GAMMA
+    side_start_time      = None
+    last_artist          = None
 
     def shutdown(sig, frame):
         log.info("Shutting down...")
@@ -115,46 +140,36 @@ def main():
 
     while True:
         try:
-            # Apply live brightness and saturation from web UI
             s = state.get()
+
+            # Live brightness update
             if s.brightness != display.matrix_brightness():
                 display.set_brightness(s.brightness)
-            if s.saturation != last_saturation and current_artwork:
-                from PIL import ImageEnhance
-                img = ImageEnhance.Color(current_artwork).enhance(s.saturation)
-                display.show_album_art(img)
+
+            # Live saturation/gamma update — reprocess from full res source
+            if current_artwork_full and (s.saturation != last_saturation or s.gamma != last_gamma):
+                display.show_album_art(art_fetcher._for_matrix(current_artwork_full))
                 last_saturation = s.saturation
+                last_gamma = s.gamma
 
             # ---------------------------------------------------------- #
             # PLAYING                                                      #
             # ---------------------------------------------------------- #
             if playing:
                 # Sleep in 1s chunks to catch web UI artwork selections quickly
-                for _ in range(PLAYING_POLL_INTERVAL):
+                for i in range(PLAYING_POLL_INTERVAL):
                     time.sleep(1)
+                    state.update(next_identify_in=PLAYING_POLL_INTERVAL - i)
                     s = state.get()
                     if s.preferred_artwork_url and s.preferred_artwork_url != s.current_artwork_url:
-                        selected_url = s.preferred_artwork_url
-                        log.info("Web UI artwork selection — updating display")
-                        if selected_url.startswith("/covers/"):
-                            filename = selected_url.replace("/covers/", "")
-                            local_path = os.path.join(COVERS_DIR, filename)
-                            from PIL import Image as PILImage
-                            if os.path.exists(local_path):
-                                full_img = PILImage.open(local_path).convert("RGB")
-                                matrix_img = art_fetcher._for_matrix(full_img)
-                            else:
-                                matrix_img = None
-                                local_path = None
-                        else:
-                            matrix_img, full_img = art_fetcher.fetch_url(selected_url)
-                            local_path = _save_cover(full_img, selected_url) if full_img else None
-                            if local_path:
-                                selected_url = f"/covers/{os.path.basename(local_path)}"
+                        matrix_img, full_img, local_path, resolved_url = _apply_selection(
+                            s.preferred_artwork_url, art_fetcher
+                        )
                         if matrix_img:
                             current_artwork = matrix_img
+                            current_artwork_full = full_img
                             display.show_album_art(matrix_img)
-                        state.update(current_artwork_url=selected_url, preferred_artwork_url="")
+                        state.update(current_artwork_url=resolved_url, preferred_artwork_url="")
                         if current_track and local_path:
                             _save_pref(current_track["artist"], current_track["title"], local_path)
                         break
@@ -163,71 +178,56 @@ def main():
                 log.info(f"RMS: {rms:.1f}")
 
                 if rms < SIGNAL_THRESHOLD:
-                    low_count += 1
-                    log.info(f"Low signal {low_count}/3")
+                    log.info(f"Low signal — RMS: {rms:.1f}")
+                    time.sleep(5)
+                    rms2 = listener.quick_rms()
+                    log.info(f"Recheck 1 — RMS: {rms2:.1f}")
 
-                    if low_count == 1:
-                        # Short wait — between-track gap or quiet passage
-                        time.sleep(5)
-                        rms2 = listener.quick_rms()
-                        log.info(f"RMS recheck: {rms2:.1f}")
-                        if rms2 >= SIGNAL_THRESHOLD:
-                            log.info("Signal recovered — resetting count")
-                            low_count = 0
+                    if rms2 >= SIGNAL_THRESHOLD:
+                        log.info("Signal recovered")
+                        continue
+
+                    if rms2 >= 50:
+                        # Run-out groove — wait longer to confirm
+                        time.sleep(25)
+                        rms3 = listener.quick_rms()
+                        log.info(f"Recheck 2 — RMS: {rms3:.1f}")
+                        if rms3 >= SIGNAL_THRESHOLD:
+                            log.info("Signal recovered")
                             continue
 
-                    elif low_count == 2:
-                        # Medium wait — more sustained quiet
-                        time.sleep(20)
-                        rms2 = listener.quick_rms()
-                        log.info(f"RMS recheck: {rms2:.1f}")
-                        if rms2 >= SIGNAL_THRESHOLD:
-                            log.info("Signal recovered — resetting count")
-                            low_count = 0
-                            continue
-
-                    elif low_count >= 3:
-                        # Long wait — almost certainly end of side
-                        time.sleep(30)
-                        rms2 = listener.quick_rms()
-                        log.info(f"RMS recheck: {rms2:.1f}")
-                        if rms2 >= SIGNAL_THRESHOLD:
-                            log.info("Signal recovered — resetting count")
-                            low_count = 0
-                            continue
-                        log.info("Side ended — resetting.")
-                        playing = False
-                        low_count = 0
-                        current_track = None
-                        current_artwork = None
-                        state.update(playing=False, artist="", title="", album="",
-                                     current_artwork_url="", preferred_artwork_url="")
-                        state.clear_candidates()
-                        display.show_idle()
+                    log.info("Side ended — resetting.")
+                    if side_start_time:
+                        vstats.record_side_duration(time.time() - side_start_time)
+                    playing = False
+                    side_start_time = None
+                    last_artist = None
+                    current_track = None
+                    current_artwork = None
+                    current_artwork_full = None
+                    state.update(playing=False, artist="", title="", album="",
+                                current_artwork_url="", preferred_artwork_url="")
+                    state.clear_candidates()
+                    display.show_idle()
                     continue
-
-                low_count = 0
 
                 track = identify(listener, identifier)
                 if not track:
                     continue
 
-                # Check for web UI selection after identification
+                # Web UI selection made during identification
                 s = state.get()
                 if s.preferred_artwork_url and s.preferred_artwork_url != s.current_artwork_url:
-                    selected_url = s.preferred_artwork_url
-                    log.info("Web UI artwork selection — updating display")
-                    matrix_img, full_img = art_fetcher.fetch_url(selected_url)
-                    if matrix_img and full_img:
-                        local_path = _save_cover(full_img, selected_url)
-                        local_url = f"/covers/{os.path.basename(local_path)}"
+                    matrix_img, full_img, local_path, resolved_url = _apply_selection(
+                        s.preferred_artwork_url, art_fetcher
+                    )
+                    if matrix_img:
                         current_artwork = matrix_img
+                        current_artwork_full = full_img
                         display.show_album_art(matrix_img)
-                        state.update(current_artwork_url=local_url, preferred_artwork_url="")
-                        if current_track:
-                            _save_pref(current_track["artist"], current_track["title"], local_path)
-                    else:
-                        state.update(preferred_artwork_url="")
+                    state.update(current_artwork_url=resolved_url, preferred_artwork_url="")
+                    if current_track and local_path:
+                        _save_pref(current_track["artist"], current_track["title"], local_path)
                     continue
 
                 if track != current_track:
@@ -237,41 +237,24 @@ def main():
                         artist=track["artist"],
                         title=track["title"],
                         album=track.get("album", ""),
-                        preferred_artwork_url=""  # clear any stale selection
+                        preferred_artwork_url=""
                     )
-                    # Add ShazamIO artwork as candidate
-                    if track.get("artwork_url"):
-                        state.add_artwork_candidate(
-                            track["artwork_url"], "shazam", "Shazam"
+
+                    # Record artist change in history
+                    if track["artist"] != last_artist:
+                        last_artist = track["artist"]
+                        vstats.record_artist_change(
+                            track["artist"], track["title"],
+                            state.get().current_artwork_url
                         )
-                    # Check for saved preference first
-                    pref_path = _get_pref(track["artist"], track["title"])
-                    if pref_path and os.path.exists(pref_path):
-                        from PIL import Image as PILImage
-                        log.info(f"Using preferred artwork for: {track['artist']} - {track['title']}")
-                        full_img = PILImage.open(pref_path).convert("RGB")
-                        matrix_img = art_fetcher._for_matrix(full_img)
-                        local_url = f"/covers/{os.path.basename(pref_path)}"
-                        state.update(current_artwork_url=local_url)
-                        current_artwork = matrix_img
-                        display.show_album_art(matrix_img)
+
+                    # Same artist = same record = keep current artwork
+                    if current_artwork and track["artist"] == last_artist:
+                        log.info(f"Same artist — keeping artwork for: {track['title']}")
                         continue
-                    image = art_fetcher.fetch(track, shared_state=state)
-                    if image:
-                        matrix_img, full_img = image
-                        # Save full res to covers folder
-                        source_url = state.get().current_artwork_url
-                        local_path = _save_cover(full_img, source_url or track.get("artwork_url", track["title"]))
-                        if local_path:
-                            local_url = f"/covers/{os.path.basename(local_path)}"
-                            state.update(current_artwork_url=local_url)
-                            state.add_artwork_candidate(local_url, "local", "Current")
-                        # Only update display if artwork changed
-                        if matrix_img != current_artwork:
-                            current_artwork = matrix_img
-                            display.show_album_art(matrix_img)
-                    else:
-                        display.show_track_text(track)
+
+                    _fetch_and_show(track, art_fetcher, display,
+                                    current_artwork, current_artwork_full)
                 else:
                     log.info(f"Same track: {current_track['title']}")
 
@@ -298,7 +281,8 @@ def main():
             log.info(f"New track: {track['artist']} - {track['title']}")
             current_track = track
             playing = True
-            low_count = 0
+            side_start_time = time.time()
+            vstats.record_needle_drop()
             state.clear_candidates()
             state.update(
                 playing=True,
@@ -309,38 +293,47 @@ def main():
                 preferred_artwork_url=""
             )
 
-            if track.get("artwork_url"):
-                state.add_artwork_candidate(track["artwork_url"], "shazam", "Shazam")
-
-            # Check for saved preference
-            pref_path = _get_pref(track["artist"], track["title"])
-            if pref_path and os.path.exists(pref_path):
-                from PIL import Image as PILImage
-                log.info(f"Using preferred artwork for: {track['artist']} - {track['title']}")
-                matrix_img = art_fetcher._for_matrix(PILImage.open(pref_path).convert("RGB"))
-                local_url = f"/covers/{os.path.basename(pref_path)}"
-                state.update(current_artwork_url=local_url)
-                state.add_artwork_candidate(local_url, "local", "Your Pick ✓")
-                current_artwork = matrix_img
-                display.show_album_art(matrix_img)
-            else:
-                matrix_img, full_img = art_fetcher.fetch(track, shared_state=state)
-                if matrix_img and full_img:
-                    source_url = state.get().current_artwork_url
-                    local_path = _save_cover(full_img, source_url or track.get("artwork_url", track["title"]))
-                    if local_path:
-                        local_url = f"/covers/{os.path.basename(local_path)}"
-                        state.update(current_artwork_url=local_url)
-                        state.add_artwork_candidate(local_url, "local", "Current")
-                    current_artwork = matrix_img
-                    display.show_album_art(matrix_img)
-                else:
-                    display.show_track_text(track)
+            current_artwork, current_artwork_full = _fetch_and_show(
+                track, art_fetcher, display, None, None
+            )
 
         except Exception as e:
             log.error(f"Error: {e}", exc_info=True)
             display.show_error()
             time.sleep(SLEEP_POLL_INTERVAL)
+
+
+def _fetch_and_show(track, art_fetcher, display, current_artwork, current_artwork_full):
+    """Fetch artwork for a track (checking preferences first) and display it."""
+    if track.get("artwork_url"):
+        state.add_artwork_candidate(track["artwork_url"], "shazam", "Shazam")
+
+    pref_path = _get_pref(track["artist"], track["title"])
+    if pref_path and os.path.exists(pref_path):
+        log.info(f"Using preferred artwork for: {track['artist']} - {track['title']}")
+        full_img = PILImage.open(pref_path).convert("RGB")
+        matrix_img = art_fetcher._for_matrix(full_img)
+        local_url = f"/covers/{os.path.basename(pref_path)}"
+        state.update(current_artwork_url=local_url)
+        state.add_artwork_candidate(local_url, "local", "Your Pick ✓")
+        display.show_album_art(matrix_img)
+        return matrix_img, full_img
+
+    matrix_img, full_img = art_fetcher.fetch(track, shared_state=state)
+    if matrix_img and full_img:
+        source_url = state.get().current_artwork_url
+        local_path = _save_cover(full_img, source_url or track.get("artwork_url", track["title"]))
+        if local_path:
+            local_url = f"/covers/{os.path.basename(local_path)}"
+            state.update(current_artwork_url=local_url)
+            state.add_artwork_candidate(local_url, "local", "Current")
+        if matrix_img != current_artwork:
+            display.show_album_art(matrix_img)
+            vstats.record_cover_play(state.get().current_artwork_url)
+        return matrix_img, full_img
+
+    display.show_track_text(track)
+    return current_artwork, current_artwork_full
 
 
 if __name__ == "__main__":

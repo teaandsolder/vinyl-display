@@ -7,6 +7,7 @@ and 64x64 processed version for the matrix.
 
 import logging
 import requests
+import numpy as np
 from PIL import Image, ImageEnhance
 import io
 from config import SATURATION
@@ -85,11 +86,17 @@ class AlbumArtFetcher:
         return None
 
     def _for_matrix(self, image: Image.Image) -> Image.Image:
-        """Resize to 64x64 with saturation adjustment for LED matrix."""
+        """Resize to 64x64 with saturation and gamma for LED matrix."""
         from state import state
-        saturation = state.get().saturation
+        s = state.get()
         img = image.resize(MATRIX_SIZE, Image.LANCZOS)
-        return ImageEnhance.Color(img).enhance(saturation)
+        img = ImageEnhance.Color(img).enhance(s.saturation)
+        # Gamma: 1.0 = linear, <1.0 = darker, >1.0 = brighter midtones
+        if s.gamma != 1.0:
+            arr = np.array(img).astype(np.float32) / 255.0
+            arr = np.power(arr, 1.0 / s.gamma)
+            img = Image.fromarray((arr * 255).astype(np.uint8))
+        return img
 
     def _for_preview(self, image: Image.Image) -> Image.Image:
         """Resize to preview size for web UI — high quality, no saturation adjustment."""

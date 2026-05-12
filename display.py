@@ -8,7 +8,7 @@ Supports live brightness updates from the web UI.
 import logging
 import time
 from PIL import Image, ImageDraw, ImageFont
-from config import BRIGHTNESS, GPIO_SLOWDOWN, HARDWARE_MAPPING
+from config import BRIGHTNESS, GPIO_SLOWDOWN, HARDWARE_MAPPING, GAMMA
 
 log = logging.getLogger(__name__)
 
