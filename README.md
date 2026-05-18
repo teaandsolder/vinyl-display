@@ -116,6 +116,52 @@ Add an alias to `~/.bashrc` for convenience:
 alias vinyl='sudo -E ~/venv311/bin/python3 ~/vinyl-display/main.py'
 ```
 
+### 8. Autostart on Boot (optional)
+To start Vinyl Display automatically when the Pi powers on:
+
+```bash
+sudo nano /etc/systemd/system/vinyl.service
+```
+
+Paste:
+```ini
+[Unit]
+Description=Vinyl Display
+After=network.target sound.target
+
+[Service]
+ExecStart=/home/pi/venv311/bin/python3 /home/pi/vinyl-display/main.py
+WorkingDirectory=/home/pi/vinyl-display
+User=root
+Environment="HOME=/home/pi"
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start:
+```bash
+sudo systemctl enable vinyl
+sudo systemctl start vinyl
+```
+
+Check status:
+```bash
+sudo systemctl status vinyl
+```
+
+View live logs:
+```bash
+sudo journalctl -u vinyl -f
+```
+
+Stop the service (e.g. to run manually for debugging):
+```bash
+sudo systemctl stop vinyl
+```
+
 ---
 
 ## Configuration
@@ -152,6 +198,13 @@ STATS_ENABLED = True        # master switch for all stats
 - Identifies tracks using ShazamIO — unlimited, no API key required
 - Re-identifies every 30 seconds to update artwork between tracks
 - Mono 16kHz capture minimises CPU/DMA load
+- Three-state model: Sleeping → Listening → Playing
+
+### Unidentified Tracks
+- If Shazam can't match a track, the display shows a listening animation
+- Web UI shows "Listening..." with instructions to manually push artwork
+- Go to Saved Covers tab and tap any cover to display it immediately
+- System keeps trying to identify — if it eventually matches, preference is saved automatically
 
 ### Artwork
 - Fetches high-resolution artwork from Shazam and Cover Art Archive
@@ -166,11 +219,12 @@ STATS_ENABLED = True        # master switch for all stats
 - Cached artwork loads instantly on subsequent plays
 
 ### Web Interface
-Access at `http://raspberrypi3b.local:5000`
+Access at `http://vinyl.local:5000` (or whatever hostname you set)
 
-- **Now Playing** — full artwork, track info, cached status, re-identify countdown
-- **Saved Covers** — browse your full artwork library, tap to apply
+- **Now Playing** — full artwork, track info, cached status, re-identify countdown, display settings
+- **Saved Covers** — browse your full artwork library, tap to apply, upload your own
 - **Stats** — needle drops, unique covers, unique artists, most played, listening history
+- **Log** — live system log, colour coded by level — no SSH needed
 
 ### Display Controls
 Live controls via the web interface:
@@ -203,12 +257,12 @@ This handles quiet passages between tracks without false resets, and responds in
 
 ```
 vinyl-display/
-├── main.py           # Main loop — SLEEPING and PLAYING states
+├── main.py           # Main loop — SLEEPING, LISTENING, PLAYING states
 ├── listener.py       # Audio capture (mono 16kHz)
 ├── identifier.py     # ShazamIO integration
 ├── art.py            # Artwork fetching and processing
 ├── display.py        # LED matrix driver
-├── server.py         # Flask web interface
+├── server.py         # Flask web interface (4 tabs)
 ├── state.py          # Shared state (thread-safe)
 ├── stats.py          # Stats tracking and persistence
 └── config.py         # All user settings
@@ -239,6 +293,9 @@ Check your Pi has internet access. ShazamIO requires an outbound HTTPS connectio
 
 **Permission denied on covers folder**
 The app runs with sudo, so the covers folder is owned by root. Use `sudo rm` to delete files if needed.
+
+**Saved covers disappear when running as systemd service**
+The service runs as root, so `~` resolves to `/root/` instead of `/home/pi/`. Ensure `Environment="HOME=/home/pi"` is in the service file.
 
 **Python version errors**
 Ensure you're running with `~/venv311/bin/python3` — the system Python will not work.
