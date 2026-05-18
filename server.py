@@ -123,6 +123,7 @@ HTML = """<!DOCTYPE html>
       animation: blink 1.5s ease-in-out infinite;
     }
     @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+    @keyframes blink2 { 0%,100%{opacity:0.4} 50%{opacity:0.15} }
 
     /* Settings */
     .section-label {
@@ -208,7 +209,23 @@ HTML = """<!DOCTYPE html>
       position: absolute; top: 5px; right: 5px; background: var(--green);
       color: #fff; font-size: 9px; border-radius: 3px; padding: 2px 5px; font-weight: 600;
     }
-    .empty-state { text-align: center; color: var(--muted); padding: 60px 0; font-size: 14px; }
+    /* ── LOG ── */
+    #page-log { padding: 0 0 16px; }
+    #log-content {
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 11px; padding: 12px 16px;
+    }
+    .log-entry {
+      display: flex; gap: 10px; padding: 4px 0;
+      border-bottom: 1px solid var(--border); line-height: 1.4;
+    }
+    .log-entry:last-child { border-bottom: none; }
+    .log-ts { color: var(--muted); flex-shrink: 0; width: 56px; }
+    .log-level { flex-shrink: 0; width: 44px; font-weight: 600; }
+    .log-level.INFO { color: var(--muted); }
+    .log-level.WARNING { color: #c8922a; }
+    .log-level.ERROR { color: #c84040; }
+    .log-msg { color: var(--text); word-break: break-word; }
 
     /* ── STATS ── */
     #page-stats { padding: 0 16px 16px; }
@@ -282,6 +299,11 @@ HTML = """<!DOCTYPE html>
       <div id="stats-content"></div>
     </div>
 
+    <div class="page" id="page-log">
+      <div class="page-header">Log</div>
+      <div id="log-content"></div>
+    </div>
+
   </div>
 
   <nav id="tabbar">
@@ -305,6 +327,15 @@ HTML = """<!DOCTYPE html>
         <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
       </svg>
       Stats
+    </button>
+    <button class="tab" onclick="showTab('log')" id="tab-log">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+        <polyline points="14 2 14 8 20 8"/>
+        <line x1="16" y1="13" x2="8" y2="13"/>
+        <line x1="16" y1="17" x2="8" y2="17"/>
+      </svg>
+      Log
     </button>
   </nav>
 </div>
@@ -332,6 +363,28 @@ function showTab(tab) {
   document.getElementById('tab-' + tab).classList.add('active');
   if (tab === 'covers') renderCovers();
   if (tab === 'stats') fetchStats();
+  if (tab === 'log') fetchLog();
+}
+
+let autoScroll = true;
+
+async function fetchLog() {
+  const r = await fetch('/api/log');
+  const entries = await r.json();
+  const el = document.getElementById('log-content');
+  if (!el) return;
+  const wasAtBottom = el.scrollHeight - el.scrollTop <= el.clientHeight + 40;
+
+  el.innerHTML = entries.map(e => `
+    <div class="log-entry">
+      <span class="log-ts">${e.ts}</span>
+      <span class="log-level ${e.level}">${e.level}</span>
+      <span class="log-msg">${e.message}</span>
+    </div>`).join('');
+
+  if (wasAtBottom || autoScroll) {
+    el.scrollTop = el.scrollHeight;
+  }
 }
 
 function startCountdown(seconds) {
@@ -353,12 +406,23 @@ async function fetchState() {
 
 function renderNowPlaying(d) {
   const el = document.getElementById('np-content');
-  if (!d.playing) {
+  if (!d.playing && !d.listening) {
     el.innerHTML = `
       <div id="sleep-state">
         <div class="turntable-icon">&#9673;</div>
         <h2>Drop the needle</h2>
         <p>to start listening</p>
+      </div>`;
+    return;
+  }
+
+  if (d.listening && !d.playing) {
+    el.innerHTML = `
+      <div id="sleep-state">
+        <div class="turntable-icon" style="opacity:0.4;animation:blink2 1.5s ease-in-out infinite">&#9673;</div>
+        <h2>Listening...</h2>
+        <p>Trying to identify the track.</p>
+        <p style="margin-top:10px;font-size:12px;color:var(--muted)">Can't find a match? Go to<br><strong style="color:var(--text)">Saved Covers</strong> to push artwork manually.</p>
       </div>`;
     return;
   }
@@ -543,7 +607,10 @@ document.addEventListener('paste', async (e) => {
 });
 
 fetchState();
-setInterval(fetchState, 30000);
+setInterval(() => {
+  fetchState();
+  if (currentTab === 'log') fetchLog();
+}, 5000);
 </script>
 </body>
 </html>"""
@@ -568,6 +635,7 @@ def api_state():
     prefs = _load_prefs()
     return jsonify({
         "playing": s.playing,
+        "listening": s.listening,
         "artist": s.artist,
         "title": s.title,
         "album": s.album,
@@ -590,6 +658,11 @@ def api_covers():
         for f in files[:60]:
             covers.append({"url": f"/covers/{os.path.basename(f)}"})
     return jsonify(covers)
+
+
+@app.route("/api/log")
+def api_log():
+    return jsonify(state.get().log_buffer)
 
 
 @app.route("/api/stats")

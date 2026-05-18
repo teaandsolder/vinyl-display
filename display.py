@@ -8,7 +8,7 @@ Supports live brightness updates from the web UI.
 import logging
 import time
 from PIL import Image, ImageDraw, ImageFont
-from config import BRIGHTNESS, GPIO_SLOWDOWN, HARDWARE_MAPPING, GAMMA
+from config import BRIGHTNESS, GPIO_SLOWDOWN, HARDWARE_MAPPING
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +61,16 @@ class MatrixDisplay:
         draw.rectangle([28, 20, 36, 44], fill=ACCENT)
         draw.ellipse([26, 28, 38, 36], fill=BLACK)
         draw.ellipse([30, 30, 34, 34], fill=ACCENT)
+        self._push(img)
+
+    def show_listening(self):
+        """Shown when signal detected but track not yet identified."""
+        img = self._solid(BLACK)
+        draw = ImageDraw.Draw(img)
+        # Three dots with a subtle pulse pattern
+        for i, x in enumerate([22, 30, 38]):
+            brightness = 40 + i * 20
+            draw.ellipse([x, 29, x+5, 34], fill=(brightness, brightness, brightness))
         self._push(img)
 
     def show_idle(self):

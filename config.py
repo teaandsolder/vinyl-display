@@ -28,10 +28,6 @@ SETTLE_SECONDS = 3
 # 150 sits cleanly between the two.
 SIGNAL_THRESHOLD = 150
 
-# How many consecutive low readings before declaring the side ended.
-# 2 = ~60 seconds of sustained quiet.
-SIDE_END_CONSECUTIVE = 2
-
 # Seconds between RMS checks when no record is playing.
 SLEEP_POLL_INTERVAL = 3
 

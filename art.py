@@ -10,7 +10,6 @@ import requests
 import numpy as np
 from PIL import Image, ImageEnhance
 import io
-from config import SATURATION
 
 log = logging.getLogger(__name__)
 

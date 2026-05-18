@@ -34,6 +34,26 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+
+class WebLogHandler(logging.Handler):
+    """Captures log records into the shared state buffer for the web UI."""
+    def emit(self, record):
+        from state import state
+        try:
+            state.append_log(
+                level=record.levelname,
+                message=record.getMessage(),
+                timestamp=self.formatter.formatTime(record, "%H:%M:%S")
+            )
+        except Exception:
+            pass
+
+
+# Add web handler to root logger
+_web_handler = WebLogHandler()
+_web_handler.setFormatter(logging.Formatter())
+logging.getLogger().addHandler(_web_handler)
+
 PREF_FILE  = os.path.expanduser("~/.vinyl-display/preferences.json")
 COVERS_DIR = os.path.expanduser("~/vinyl-display-covers")
 
@@ -152,6 +172,21 @@ def main():
                 last_saturation = s.saturation
                 last_gamma = s.gamma
 
+            # Handle cover selection at any time — listening or playing
+            if s.preferred_artwork_url and s.preferred_artwork_url != s.current_artwork_url:
+                selected_url = s.preferred_artwork_url
+                matrix_img, full_img, local_path, resolved_url = _apply_selection(
+                    selected_url, art_fetcher
+                )
+                if matrix_img:
+                    current_artwork = matrix_img
+                    current_artwork_full = full_img
+                    display.show_album_art(matrix_img)
+                state.update(current_artwork_url=resolved_url, preferred_artwork_url="")
+                if current_track and local_path:
+                    _save_pref(current_track["artist"], current_track["title"], local_path)
+                continue  # skip rest of loop — artwork is now showing
+
             # ---------------------------------------------------------- #
             # PLAYING                                                      #
             # ---------------------------------------------------------- #
@@ -205,7 +240,7 @@ def main():
                     current_track = None
                     current_artwork = None
                     current_artwork_full = None
-                    state.update(playing=False, artist="", title="", album="",
+                    state.update(playing=False, listening=False, artist="", title="", album="",
                                 current_artwork_url="", preferred_artwork_url="")
                     state.clear_candidates()
                     display.show_idle()
@@ -267,15 +302,34 @@ def main():
 
             if rms < SIGNAL_THRESHOLD:
                 log.debug(f"Silence — RMS: {rms:.1f}")
+                s = state.get()  # refresh after possible listening state change
+                if s.listening:
+                    state.update(listening=False)
+                    display.show_idle()
                 time.sleep(SLEEP_POLL_INTERVAL)
                 continue
 
             log.info(f"Signal detected — RMS: {rms:.1f}. Settling {SETTLE_SECONDS}s...")
+            state.update(listening=True)
+            # Only show listening screen if no artwork is currently displaying
+            if not current_artwork:
+                display.show_listening()
             time.sleep(SETTLE_SECONDS)
 
             track = identify(listener, identifier)
             if not track:
                 log.info("No match — back to sleep.")
+                # Check if user selected artwork during identification
+                s = state.get()
+                if s.preferred_artwork_url:
+                    matrix_img, full_img, local_path, resolved_url = _apply_selection(
+                        s.preferred_artwork_url, art_fetcher
+                    )
+                    if matrix_img:
+                        current_artwork = matrix_img
+                        current_artwork_full = full_img
+                        display.show_album_art(matrix_img)
+                    state.update(current_artwork_url=resolved_url, preferred_artwork_url="")
                 continue
 
             log.info(f"New track: {track['artist']} - {track['title']}")
@@ -286,6 +340,7 @@ def main():
             state.clear_candidates()
             state.update(
                 playing=True,
+                listening=False,
                 artist=track["artist"],
                 title=track["title"],
                 album=track.get("album", ""),
